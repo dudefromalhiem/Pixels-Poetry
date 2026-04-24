@@ -28,6 +28,8 @@ import {
 import emailjs from "https://cdn.jsdelivr.net/npm/@emailjs/browser@4/+esm";
 import { siteConfig } from "./config.js";
 
+const THREE = window.THREE;
+
 const requestForm = document.getElementById("request-form");
 const requestFilesInput = document.getElementById("request-files");
 const selectedFilesContainer = document.getElementById("selected-files");
@@ -42,6 +44,7 @@ const requestsList = document.getElementById("requests-list");
 const ownerModal = document.getElementById("owner-modal");
 const ownerModalBackdrop = document.getElementById("owner-modal-backdrop");
 const ownerModalClose = document.getElementById("owner-modal-close");
+const splotch3dContainer = document.getElementById("splotch-3d");
 
 let auth;
 let db;
@@ -85,9 +88,302 @@ const REQUIRED_KEYS = [
 const OWNER_TRIGGER = "ALHIEM";
 
 initializeRuntime();
+createMaintenanceSplotch(splotch3dContainer);
+
+function createMaintenanceSplotch(container) {
+  if (!container) {
+    return null;
+  }
+
+  if (!THREE || !THREE.Scene) {
+    container.textContent = "3D preview unavailable.";
+    container.style.display = "flex";
+    container.style.alignItems = "center";
+    container.style.justifyContent = "center";
+    container.style.color = "#c9c9c9";
+    container.style.fontFamily = "IBM Plex Mono, monospace";
+    container.style.fontSize = "0.85rem";
+    return null;
+  }
+
+  const scene = new THREE.Scene();
+  const camera = createSplotchCamera(container);
+  const renderer = createSplotchRenderer(container);
+  const envTexture = createSplotchReflectionMap();
+  addSplotchLights(scene);
+
+  const state = {
+    textMesh: null,
+    autoSpinY: 0,
+    isDragging: false,
+    lastDrag: { x: 0, y: 0 },
+    targetDragRot: { x: -0.15, y: 0 },
+    currentDragRot: { x: -0.15, y: 0 }
+  };
+
+  let running = true;
+  let animationFrameId = 0;
+
+  loadSplotchTextMesh(scene, envTexture, mesh => {
+    state.textMesh = mesh;
+  });
+
+  function animate() {
+    if (!running) {
+      return;
+    }
+
+    animationFrameId = requestAnimationFrame(animate);
+
+    if (state.textMesh) {
+      state.autoSpinY += 0.005;
+
+      state.currentDragRot.y += (state.targetDragRot.y - state.currentDragRot.y) * 0.1;
+      state.currentDragRot.x += (state.targetDragRot.x - state.currentDragRot.x) * 0.1;
+
+      state.textMesh.rotation.y = state.autoSpinY + state.currentDragRot.y;
+      state.textMesh.rotation.x = state.currentDragRot.x;
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  function handleResize() {
+    const width = Math.max(1, container.clientWidth);
+    const height = Math.max(1, container.clientHeight);
+
+    camera.aspect = width / height;
+    updateSplotchCameraDistance(camera, width);
+    camera.updateProjectionMatrix();
+    renderer.setSize(width, height);
+  }
+
+  const interaction = attachSplotchInteractionHandlers(state, container);
+  const resizeObserver = new ResizeObserver(handleResize);
+  resizeObserver.observe(container);
+  window.addEventListener("resize", handleResize);
+
+  handleResize();
+  animate();
+
+  return {
+    destroy() {
+      running = false;
+      cancelAnimationFrame(animationFrameId);
+
+      window.removeEventListener("resize", handleResize);
+      resizeObserver.disconnect();
+      interaction.remove();
+
+      if (renderer.domElement.parentNode === container) {
+        container.removeChild(renderer.domElement);
+      }
+
+      renderer.dispose();
+    }
+  };
+}
+
+function createSplotchCamera(container) {
+  const width = Math.max(1, container.clientWidth);
+  const height = Math.max(1, container.clientHeight);
+  const camera = new THREE.PerspectiveCamera(45, width / height, 1, 500);
+
+  updateSplotchCameraDistance(camera, width);
+  return camera;
+}
+
+function updateSplotchCameraDistance(camera, width) {
+  camera.position.z = width < 768 ? 34 : 26;
+}
+
+function createSplotchRenderer(container) {
+  const renderer = new THREE.WebGLRenderer({
+    alpha: true,
+    antialias: true
+  });
+
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(Math.max(1, container.clientWidth), Math.max(1, container.clientHeight));
+  container.appendChild(renderer.domElement);
+
+  return renderer;
+}
+
+function createSplotchReflectionMap() {
+  const envCanvas = document.createElement("canvas");
+  envCanvas.width = 1024;
+  envCanvas.height = 512;
+
+  const envCtx = envCanvas.getContext("2d");
+  if (!envCtx) {
+    return null;
+  }
+
+  envCtx.fillStyle = "#0a0a0a";
+  envCtx.fillRect(0, 0, 1024, 512);
+
+  envCtx.fillStyle = "#ffffff";
+  envCtx.fillRect(100, 50, 400, 80);
+  envCtx.fillRect(800, 150, 50, 300);
+  envCtx.fillRect(200, 450, 500, 20);
+  envCtx.filter = "blur(12px)";
+
+  const envTexture = new THREE.CanvasTexture(envCanvas);
+  envTexture.mapping = THREE.EquirectangularReflectionMapping;
+
+  return envTexture;
+}
+
+function addSplotchLights(scene) {
+  scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+  dirLight.position.set(10, 20, 30);
+  scene.add(dirLight);
+
+  const redSigilLight = new THREE.PointLight(0xdc1c1c, 8, 200);
+  redSigilLight.position.set(0, 0, -25);
+  scene.add(redSigilLight);
+}
+
+function loadSplotchTextMesh(scene, envTexture, onReady) {
+  const fallbackMesh = createFallbackSplotchMesh(envTexture);
+
+  if (!THREE.FontLoader || !THREE.TextGeometry) {
+    scene.add(fallbackMesh);
+    onReady(fallbackMesh);
+    return;
+  }
+
+  const loader = new THREE.FontLoader();
+
+  loader.load(
+    "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/fonts/helvetiker_bold.typeface.json",
+    font => {
+      const geometry = new THREE.TextGeometry("ALHIEM", {
+        font,
+        size: 12,
+        height: 4.2,
+        curveSegments: 8,
+        bevelEnabled: true,
+        bevelThickness: 0.2,
+        bevelSize: 0.15,
+        bevelSegments: 5
+      });
+
+      geometry.center();
+
+      const material = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        metalness: 1.0,
+        roughness: 0.05,
+        envMap: envTexture,
+        envMapIntensity: 2.5
+      });
+
+      const mesh = new THREE.Mesh(geometry, material);
+      scene.add(mesh);
+
+      onReady(mesh);
+    },
+    undefined,
+    error => {
+      console.error("Failed to load 3D font for Splotch preview.", error);
+      scene.add(fallbackMesh);
+      onReady(fallbackMesh);
+    }
+  );
+}
+
+function createFallbackSplotchMesh(envTexture) {
+  const geometry = new THREE.TorusKnotGeometry(6, 1.8, 180, 24);
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    metalness: 1,
+    roughness: 0.06,
+    envMap: envTexture,
+    envMapIntensity: 2.3
+  });
+
+  return new THREE.Mesh(geometry, material);
+}
+
+function attachSplotchInteractionHandlers(state, container) {
+  function updateDragFromPointer(x, y, multiplier) {
+    if (!state.isDragging) {
+      return;
+    }
+
+    const dx = x - state.lastDrag.x;
+    const dy = y - state.lastDrag.y;
+
+    state.targetDragRot.y += dx * multiplier;
+    state.targetDragRot.x += dy * multiplier;
+    state.targetDragRot.x = Math.max(-0.6, Math.min(0.6, state.targetDragRot.x));
+
+    state.lastDrag.x = x;
+    state.lastDrag.y = y;
+  }
+
+  function onMouseMove(event) {
+    updateDragFromPointer(event.clientX, event.clientY, 0.008);
+  }
+
+  function onMouseDown(event) {
+    state.isDragging = true;
+    state.lastDrag.x = event.clientX;
+    state.lastDrag.y = event.clientY;
+  }
+
+  function onMouseUp() {
+    state.isDragging = false;
+  }
+
+  function onTouchStart(event) {
+    const touch = event.touches[0];
+    if (!touch) {
+      return;
+    }
+    state.isDragging = true;
+    state.lastDrag.x = touch.clientX;
+    state.lastDrag.y = touch.clientY;
+  }
+
+  function onTouchMove(event) {
+    const touch = event.touches[0];
+    if (!touch) {
+      return;
+    }
+    updateDragFromPointer(touch.clientX, touch.clientY, 0.012);
+  }
+
+  function onTouchEnd() {
+    state.isDragging = false;
+  }
+
+  container.addEventListener("mousemove", onMouseMove);
+  container.addEventListener("mousedown", onMouseDown);
+  window.addEventListener("mouseup", onMouseUp);
+  container.addEventListener("touchstart", onTouchStart, { passive: true });
+  container.addEventListener("touchmove", onTouchMove, { passive: true });
+  container.addEventListener("touchend", onTouchEnd);
+
+  return {
+    remove() {
+      container.removeEventListener("mousemove", onMouseMove);
+      container.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mouseup", onMouseUp);
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
+      container.removeEventListener("touchend", onTouchEnd);
+    }
+  };
+}
 
 function initializeRuntime() {
   bindBaseEvents();
+  initializeStandaloneMediaEffects();
 
   if (!hasFirebaseConfig()) {
     setRequestStatus("Configure Firebase in config.js before using the request system.");
@@ -110,6 +406,44 @@ function initializeRuntime() {
   renderSelectedFiles();
   onAuthStateChanged(auth, handleAuthStateChanged);
   setRequestStatus("Idle. Ready for intake.");
+}
+
+function initializeStandaloneMediaEffects() {
+  const mediaSlots = Array.from(document.querySelectorAll(".standalone-media"));
+  if (!mediaSlots.length) {
+    return;
+  }
+
+  if (window.matchMedia("(hover: none)").matches) {
+    return;
+  }
+
+  mediaSlots.forEach(slot => {
+    const resetTilt = () => {
+      slot.style.setProperty("--rx", "0deg");
+      slot.style.setProperty("--ry", "0deg");
+      slot.style.setProperty("--mx", "50%");
+      slot.style.setProperty("--my", "50%");
+    };
+
+    const onPointerMove = event => {
+      const rect = slot.getBoundingClientRect();
+      const x = (event.clientX - rect.left) / rect.width;
+      const y = (event.clientY - rect.top) / rect.height;
+
+      const rotateY = (x - 0.5) * 6;
+      const rotateX = (0.5 - y) * 5;
+
+      slot.style.setProperty("--rx", `${rotateX.toFixed(2)}deg`);
+      slot.style.setProperty("--ry", `${rotateY.toFixed(2)}deg`);
+      slot.style.setProperty("--mx", `${(x * 100).toFixed(1)}%`);
+      slot.style.setProperty("--my", `${(y * 100).toFixed(1)}%`);
+    };
+
+    resetTilt();
+    slot.addEventListener("pointermove", onPointerMove);
+    slot.addEventListener("pointerleave", resetTilt);
+  });
 }
 
 function bindBaseEvents() {
