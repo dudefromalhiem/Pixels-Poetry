@@ -107,6 +107,7 @@ function initializeRuntime() {
   }
 
   bindFirebaseEvents();
+  renderSelectedFiles();
   onAuthStateChanged(auth, handleAuthStateChanged);
   setRequestStatus("Idle. Ready for intake.");
 }
@@ -158,31 +159,51 @@ function disableInteractiveControls() {
 
 function handleFileSelection(event) {
   const incomingFiles = Array.from(event.target.files || []);
-  const invalidFiles = incomingFiles.filter(file => !isAllowedFile(file) || file.size > MAX_FILE_SIZE_BYTES);
+  requestFilesInput.value = "";
 
-  if (invalidFiles.length) {
-    selectedFiles = [];
-    requestFilesInput.value = "";
-    selectedFilesContainer.innerHTML = "";
-    setRequestStatus("Only images/documents up to 10 MB per file are allowed.");
+  if (!incomingFiles.length) {
+    renderSelectedFiles();
     return;
   }
 
-  selectedFiles = incomingFiles;
-  selectedFilesContainer.innerHTML = "";
+  const invalidFiles = incomingFiles.filter(file => !isAllowedFile(file) || file.size > MAX_FILE_SIZE_BYTES);
+  const validIncomingFiles = incomingFiles.filter(file => isAllowedFile(file) && file.size <= MAX_FILE_SIZE_BYTES);
+
+  if (invalidFiles.length) {
+    setRequestStatus("Only images/documents up to 10 MB per file are allowed.");
+  }
+
+  if (!validIncomingFiles.length) {
+    renderSelectedFiles();
+    return;
+  }
+
+  const existingFiles = new Set(selectedFiles.map(getFileKey));
+  let addedCount = 0;
+
+  validIncomingFiles.forEach(file => {
+    const fileKey = getFileKey(file);
+
+    if (existingFiles.has(fileKey)) {
+      return;
+    }
+
+    existingFiles.add(fileKey);
+    selectedFiles.push(file);
+    addedCount += 1;
+  });
 
   if (!selectedFiles.length) {
+    renderSelectedFiles();
     setRequestStatus("Idle. Ready for intake.");
     return;
   }
 
-  selectedFiles.forEach(file => {
-    const chip = document.createElement("span");
-    chip.textContent = `${file.name} (${formatFileSize(file.size)})`;
-    selectedFilesContainer.appendChild(chip);
-  });
+  renderSelectedFiles();
 
-  setRequestStatus(`${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} ready for upload.`);
+  if (addedCount) {
+    setRequestStatus(`${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} ready for upload.`);
+  }
 }
 
 async function handleRequestSubmit(event) {
@@ -246,7 +267,8 @@ async function handleRequestSubmit(event) {
 
     requestForm.reset();
     selectedFiles = [];
-    selectedFilesContainer.innerHTML = "";
+    requestFilesInput.value = "";
+    renderSelectedFiles();
     setRequestStatus("Request submitted successfully.");
   } catch (error) {
     console.error(error);
@@ -289,6 +311,54 @@ async function uploadSelectedFiles(files) {
   }
 
   return fileUrls;
+}
+
+function renderSelectedFiles() {
+  selectedFilesContainer.innerHTML = "";
+
+  if (!selectedFiles.length) {
+    const emptyState = document.createElement("p");
+    emptyState.className = "selected-files-empty";
+    emptyState.textContent = "No files selected yet.";
+    selectedFilesContainer.appendChild(emptyState);
+    return;
+  }
+
+  selectedFiles.forEach((file, index) => {
+    const item = document.createElement("div");
+    item.className = "selected-file-item";
+
+    const meta = document.createElement("div");
+    meta.className = "selected-file-meta";
+
+    const name = document.createElement("span");
+    name.className = "selected-file-name";
+    name.textContent = file.name;
+
+    const size = document.createElement("span");
+    size.className = "selected-file-size";
+    size.textContent = formatFileSize(file.size);
+
+    meta.append(name, size);
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "selected-file-remove";
+    removeButton.textContent = "Remove";
+    removeButton.addEventListener("click", () => {
+      selectedFiles.splice(index, 1);
+      renderSelectedFiles();
+
+      if (!selectedFiles.length) {
+        setRequestStatus("Idle. Ready for intake.");
+      } else {
+        setRequestStatus(`${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} ready for upload.`);
+      }
+    });
+
+    item.append(meta, removeButton);
+    selectedFilesContainer.appendChild(item);
+  });
 }
 
 async function handleSignIn() {
@@ -392,31 +462,62 @@ async function loadOwnerDashboard(forceRefresh) {
 }
 
 function createRequestCard(data) {
-  const card = document.createElement("article");
+  const card = document.createElement("details");
   card.className = "request-card";
+  card.open = false;
 
   const timestamp = formatTimestamp(data.createdAt);
+  const requirementPreview = buildRequirementPreview(data);
 
-  card.innerHTML = `
-    <div class="request-card-head">
+  const summary = document.createElement("summary");
+  summary.className = "request-card-summary";
+  summary.innerHTML = `
+    <div class="request-card-summary-head">
       <div>
+        <p class="request-card-kicker">Request</p>
         <h4 class="request-card-title">${escapeHtml(data.websiteName || "Untitled Request")}</h4>
-        <p class="request-card-time">${timestamp}</p>
       </div>
       <span class="project-tag">${escapeHtml(data.type || "request")}</span>
     </div>
-    <div class="request-field-list"></div>
+    <div class="request-card-summary-meta">
+      <span>${escapeHtml(data.name || "Unnamed requester")}</span>
+      <span>${escapeHtml(data.email || "No email provided")}</span>
+      <span>${escapeHtml(timestamp)}</span>
+    </div>
+    <p class="request-card-summary-copy">${escapeHtml(truncateText(data.description || "", 180))}</p>
+    <p class="request-card-summary-copy request-card-summary-copy-muted">${escapeHtml(truncateText(requirementPreview, 180))}</p>
   `;
 
-  const fieldList = card.querySelector(".request-field-list");
+  const body = document.createElement("div");
+  body.className = "request-card-body";
 
-  for (const key of REQUIRED_KEYS) {
+  const fieldList = document.createElement("div");
+  fieldList.className = "request-field-list";
+
+  const detailsFields = [
+    "name",
+    "email",
+    "websiteName",
+    "description",
+    "theme",
+    "colorPreferences",
+    "fontPreferences",
+    "dataToDisplay",
+    "websitePurpose",
+    "type",
+    "maintenancePlan",
+    "additionalRequirements",
+    "fileUrls",
+    "createdAt"
+  ];
+
+  for (const key of detailsFields) {
     const field = document.createElement("div");
     field.className = "request-field";
 
     const label = document.createElement("span");
     label.className = "request-field-label";
-    label.textContent = key;
+    label.textContent = formatFieldLabel(key);
 
     const value = document.createElement("div");
 
@@ -429,12 +530,26 @@ function createRequestCard(data) {
         linksWrap.textContent = "No files uploaded.";
       } else {
         files.forEach((url, index) => {
-          const link = document.createElement("a");
-          link.href = url;
-          link.target = "_blank";
-          link.rel = "noreferrer";
-          link.textContent = `File ${index + 1}`;
-          linksWrap.appendChild(link);
+          const fileItem = document.createElement("a");
+          fileItem.className = "request-file-item";
+          fileItem.href = url;
+          fileItem.target = "_blank";
+          fileItem.rel = "noreferrer";
+
+          if (isImageUrl(url)) {
+            const preview = document.createElement("img");
+            preview.className = "request-file-thumb";
+            preview.src = url;
+            preview.alt = `Uploaded file ${index + 1}`;
+            fileItem.appendChild(preview);
+          } else {
+            const fileName = document.createElement("span");
+            fileName.className = "request-file-name";
+            fileName.textContent = `File ${index + 1}`;
+            fileItem.appendChild(fileName);
+          }
+
+          linksWrap.appendChild(fileItem);
         });
       }
 
@@ -449,7 +564,61 @@ function createRequestCard(data) {
     fieldList.appendChild(field);
   }
 
+  body.appendChild(fieldList);
+  card.append(summary, body);
   return card;
+}
+
+function buildRequirementPreview(data) {
+  return [
+    data.theme,
+    data.colorPreferences,
+    data.fontPreferences,
+    data.dataToDisplay,
+    data.websitePurpose,
+    data.additionalRequirements
+  ]
+    .filter(Boolean)
+    .join(" • ");
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || "").trim();
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function formatFieldLabel(key) {
+  const labels = {
+    name: "Name",
+    email: "Email",
+    websiteName: "Website Name",
+    description: "Description",
+    theme: "Theme",
+    colorPreferences: "Color Preferences",
+    fontPreferences: "Font Preferences",
+    dataToDisplay: "Data to Display",
+    websitePurpose: "Website Purpose",
+    type: "Type",
+    maintenancePlan: "Maintenance Plan",
+    additionalRequirements: "Additional Requirements",
+    fileUrls: "Files",
+    createdAt: "Timestamp"
+  };
+
+  return labels[key] || key;
+}
+
+function getFileKey(file) {
+  return [file.name, file.size, file.lastModified].join("::");
+}
+
+function isImageUrl(url) {
+  return /\.(png|jpe?g|gif|webp)(?:$|\?)/i.test(String(url || ""));
 }
 
 function normalize(value) {
