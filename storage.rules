@@ -1,0 +1,9 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /website-requests/{allPaths=**} {
+      allow write: if request.resource.size < 10 * 1024 * 1024;
+      allow read: if true;
+    }
+  }
+}

@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner() {
+      return request.auth != null && request.auth.token.email == "dudefromalhiem@gmail.com";
+    }
+
+    function hasExactRequestKeys() {
+      return request.resource.data.keys().hasOnly([
+        "name",
+        "email",
+        "websiteName",
+        "description",
+        "theme",
+        "colorPreferences",
+        "fontPreferences",
+        "dataToDisplay",
+        "websitePurpose",
+        "type",
+        "maintenancePlan",
+        "additionalRequirements",
+        "fileUrls",
+        "createdAt"
+      ]);
+    }
+
+    function hasValidRequestShape() {
+      return request.resource.data.name is string &&
+        request.resource.data.email is string &&
+        request.resource.data.websiteName is string &&
+        request.resource.data.description is string &&
+        request.resource.data.theme is string &&
+        request.resource.data.colorPreferences is string &&
+        request.resource.data.fontPreferences is string &&
+        request.resource.data.dataToDisplay is string &&
+        request.resource.data.websitePurpose is string &&
+        request.resource.data.type is string &&
+        request.resource.data.maintenancePlan is string &&
+        request.resource.data.additionalRequirements is string &&
+        request.resource.data.fileUrls is list &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.createdAt == request.time &&
+        request.resource.data.type in ["personal", "business", "company"] &&
+        request.resource.data.maintenancePlan in ["monthly", "yearly", "none"];
+    }
+
+    match /website_requests/{requestId} {
+      allow create: if hasExactRequestKeys() && hasValidRequestShape();
+      allow read: if isOwner();
+      allow update, delete: if false;
+    }
+  }
+}
